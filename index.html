@@ -1,0 +1,541 @@
+
+<!DOCTYPE html>
+<html lang="id">
+<head>
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='%236366f1'%3E%3Cpath d='M12 2L14.39 8.39L21 10.39L15.39 14.39L18 21L12 17.77L6 21L8.61 14.39L3 10.39L9.61 8.39L12 2Z' /%3E%3C/svg%3E" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>AVE-Studio</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <style>
+      body { font-family: 'Inter', sans-serif; }
+    </style>
+    <script type="importmap">
+{
+  "imports": {
+    "@google/genai": "https://aistudiocdn.com/@google/genai@^1.16.0",
+    "react-dom/client": "https://esm.sh/react-dom@18.2.0/client",
+    "react": "https://esm.sh/react@18.2.0",
+    "react-dom/": "https://aistudiocdn.com/react-dom@^19.2.0/",
+    "react/": "https://aistudiocdn.com/react@^19.2.0/"
+  }
+}
+</script>
+</head>
+<body class="bg-gray-900 text-gray-200">
+    <div id="root"></div>
+    <script type="module">
+// --- IMPORTS ---
+import React, { useState, useCallback, useEffect } from 'react';
+import ReactDOM from 'react-dom/client';
+import { GoogleGenAI, Modality } from "@google/genai";
+
+// Lingkungan eksekusi (misalnya, Google Gemini Canvas) diharapkan menyediakan `process.env.API_KEY`.
+
+// --- START OF types.ts ---
+const Mode = {
+    Lookbook: 'lookbook',
+    Broll: 'b-roll',
+};
+
+// --- START OF utils/fileUtils.ts ---
+const fileToGenerativePart = async (file) => {
+  const base64EncodedDataPromise = new Promise((resolve) => {
+    const reader = new FileReader();
+    reader.onloadend = () => {
+        const base64String = (reader.result).split(',')[1];
+        resolve(base64String);
+    };
+    reader.readAsDataURL(file);
+  });
+  
+  return {
+    inlineData: {
+      data: await base64EncodedDataPromise,
+      mimeType: file.type,
+    },
+  };
+};
+
+const base64ToGenerativePart = (base64String) => {
+    const [header, data] = base64String.split(',');
+    const mimeType = header.match(/:(.*?);/)?.[1] || 'image/png';
+    return {
+        inlineData: {
+            data,
+            mimeType,
+        }
+    };
+}
+
+// --- START OF constants.ts ---
+const THEMES = [
+    'Studio Profesional',
+    'Gaya Jalanan Perkotaan',
+    'Minimalis',
+    'Film Antik',
+    'Alam & Luar Ruangan',
+    'Neon Cyberpunk',
+    'Mewah & Elegan',
+    'Bohemian Chic'
+];
+
+const LIGHTING = [
+    'Cahaya Senja',
+    'Bayangan Dramatis',
+    'Cahaya Studio Lembut',
+    'Cerah & Lapang',
+    'Sinematik',
+    'Sinar Neon',
+    'Cahaya Latar',
+    'Lampu Kilat Keras'
+];
+
+const INITIAL_IMAGES = Array.from({ length: 3 }, (_, i) => ({
+    id: i + 1,
+    src: `https://picsum.photos/seed/${i+1}/400/600`,
+    prompt: undefined,
+    videoSrc: undefined,
+    isGeneratingVideo: false,
+    isLoading: false,
+    generationRequest: undefined,
+}));
+
+// --- START OF services/geminiService.ts ---
+const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+
+const imageEditModel = 'gemini-2.5-flash-image';
+const textModel = 'gemini-2.5-flash';
+const videoModel = 'veo-3.1-fast-generate-preview';
+
+const generateImage = (request) => {
+  const config = {
+      responseModalities: [Modality.IMAGE],
+  };
+
+  return ai.models.generateContent({ model: imageEditModel, contents: request, config })
+    .then(response => {
+      const imagePart = response.candidates?.[0]?.content?.parts.find(part => part.inlineData);
+      if (imagePart && imagePart.inlineData) {
+        const { data, mimeType } = imagePart.inlineData;
+        return `data:${mimeType};base64,${data}`;
+      }
+      throw new Error("Tidak ada bagian gambar yang ditemukan dalam respons.");
+    });
+};
+
+const generateImagePrompt = async (base64Image) => {
+  const imagePart = base64ToGenerativePart(base64Image);
+  const textPart = { text: "Jelaskan gambar ini secara rinci untuk generator teks-ke-gambar. Fokus pada objek, latar, warna, dan gaya." };
+
+  const response = await ai.models.generateContent({
+    model: textModel,
+    contents: { parts: [imagePart, textPart] },
+  });
+  
+  return response.text.trim();
+};
+
+const generateVideoFromImage = async (base64Image) => {
+  const imagePart = base64ToGenerativePart(base64Image);
+  if (!imagePart.inlineData) throw new Error("Tidak dapat memproses gambar untuk pembuatan video.");
+
+  const prompt = 'Animasikan gambar pemotretan produk ini secara halus. Tambahkan gerakan sinematik yang lembut agar terlihat seperti iklan video pendek premium. Gerakannya harus mulus dan elegan.';
+
+  let operation = await ai.models.generateVideos({
+    model: videoModel,
+    prompt: prompt,
+    image: {
+      imageBytes: imagePart.inlineData.data,
+      mimeType: imagePart.inlineData.mimeType,
+    },
+    config: {
+      numberOfVideos: 1,
+      resolution: '720p',
+      aspectRatio: '9:16'
+    }
+  });
+
+  while (!operation.done) {
+    await new Promise(resolve => setTimeout(resolve, 10000));
+    operation = await ai.operations.getVideosOperation({ operation: operation });
+  }
+
+  const downloadLink = operation.response?.generatedVideos?.[0]?.video?.uri;
+  if (!downloadLink) {
+    throw new Error("Pembuatan video selesai, tetapi tidak ada tautan unduhan yang diberikan. Ini mungkin karena peninjauan kebijakan konten. Silakan coba gambar yang berbeda.");
+  }
+
+  const videoResponse = await fetch(`${downloadLink}&key=${process.env.API_KEY}`);
+  if (!videoResponse.ok) {
+    throw new Error("Gagal mengunduh video yang dihasilkan.");
+  }
+
+  const videoBlob = await videoResponse.blob();
+  return URL.createObjectURL(videoBlob);
+};
+
+// --- START OF components/icons ---
+const BagIcon = (props) => React.createElement('svg', { ...props, xmlns: "http://www.w3.org/2000/svg", width: "24", height: "24", viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", strokeWidth: "2", strokeLinecap: "round", strokeLinejoin: "round" }, React.createElement('path', { d: "M6 2L3 6v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V6l-3-4z" }), React.createElement('line', { x1: "3", y1: "6", x2: "21", y2: "6" }), React.createElement('path', { d: "M16 10a4 4 0 0 1-8 0" }));
+const CloseIcon = (props) => React.createElement('svg', { ...props, xmlns: "http://www.w3.org/2000/svg", width: "24", height: "24", viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", strokeWidth: "2", strokeLinecap: "round", strokeLinejoin: "round" }, React.createElement('line', { x1: "18", y1: "6", x2: "6", y2: "18" }), React.createElement('line', { x1: "6", y1: "6", x2: "18", y2: "18" }));
+const CopyIcon = (props) => React.createElement('svg', { ...props, xmlns: "http://www.w3.org/2000/svg", width: "24", height: "24", viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", strokeWidth: "2", strokeLinecap: "round", strokeLinejoin: "round" }, React.createElement('rect', { x: "9", y: "9", width: "13", height: "13", rx: "2", ry: "2" }), React.createElement('path', { d: "M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" }));
+const DownloadIcon = (props) => React.createElement('svg', { ...props, xmlns: "http://www.w3.org/2000/svg", width: "24", height: "24", viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", strokeWidth: "2", strokeLinecap: "round", strokeLinejoin: "round" }, React.createElement('path', { d: "M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" }), React.createElement('polyline', { points: "7 10 12 15 17 10" }), React.createElement('line', { x1: "12", y1: "15", x2: "12", y2: "3" }));
+const PlusIcon = (props) => React.createElement('svg', { ...props, xmlns: "http://www.w3.org/2000/svg", width: "24", height: "24", viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", strokeWidth: "2", strokeLinecap: "round", strokeLinejoin: "round" }, React.createElement('line', { x1: "12", y1: "5", x2: "12", y2: "19" }), React.createElement('line', { x1: "5", y1: "12", x2: "19", y2: "12" }));
+const RefreshCwIcon = (props) => React.createElement('svg', { ...props, xmlns: "http://www.w3.org/2000/svg", width: "24", height: "24", viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", strokeWidth: "2", strokeLinecap: "round", strokeLinejoin: "round" }, React.createElement('path', { d: "M23 4v6h-6" }), React.createElement('path', { d: "M20.49 15a9 9 0 1 1-2.12-9.36L23 10" }));
+const SparklesIcon = (props) => React.createElement('svg', { ...props, xmlns: "http://www.w3.org/2000/svg", width: "24", height: "24", viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", strokeWidth: "2", strokeLinecap: "round", strokeLinejoin: "round" }, React.createElement('path', { d: "M12 2L14.39 8.39L21 10.39L15.39 14.39L18 21L12 17.77L6 21L8.61 14.39L3 10.39L9.61 8.39L12 2Z" }));
+const SpinnerIcon = (props) => React.createElement('svg', { ...props, xmlns: "http://www.w3.org/2000/svg", viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", strokeWidth: "2", strokeLinecap: "round", strokeLinejoin: "round", className: "animate-spin" }, React.createElement('path', { d: "M21 12a9 9 0 1 1-6.219-8.56" }));
+const VideoIcon = (props) => React.createElement('svg', { ...props, xmlns: "http://www.w3.org/2000/svg", width: "24", height: "24", viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", strokeWidth: "2", strokeLinecap: "round", strokeLinejoin: "round" }, React.createElement('polygon', { points: "23 7 16 12 23 17 23 7" }), React.createElement('rect', { x: "1", y: "5", width: "15", height: "14", rx: "2", ry: "2" }));
+const ZoomIcon = (props) => React.createElement('svg', { ...props, xmlns: "http://www.w3.org/2000/svg", width: "24", height: "24", viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", strokeWidth: "2", strokeLinecap: "round", strokeLinejoin: "round" }, React.createElement('circle', { cx: "11", cy: "11", r: "8" }), React.createElement('line', { x1: "21", y1: "21", x2: "16.65", y2: "16.65" }), React.createElement('line', { x1: "11", y1: "8", x2: "11", y2: "14" }), React.createElement('line', { x1: "8", y1: "11", x2: "14", y2: "11" }));
+
+// --- START OF components/Modal.tsx ---
+const Modal = ({ isOpen, onClose, children }) => {
+  useEffect(() => {
+    const handleEscape = (event) => {
+      if (event.key === 'Escape') onClose();
+    };
+    if (isOpen) {
+      document.addEventListener('keydown', handleEscape);
+    }
+    return () => document.removeEventListener('keydown', handleEscape);
+  }, [isOpen, onClose]);
+
+  if (!isOpen) return null;
+
+  return React.createElement('div', { className: "fixed inset-0 bg-black bg-opacity-80 flex items-center justify-center z-50 p-4", onClick: onClose },
+    React.createElement('div', { className: "relative", onClick: e => e.stopPropagation() }, children)
+  );
+};
+
+// --- START OF components/ImageUploader.tsx ---
+const ImageUploader = ({ title, imagePreview, onImageUpload, onImageRemove }) => {
+  const [isDraggingOver, setIsDraggingOver] = useState(false);
+  const handleFile = (file) => {
+    if (file && file.type.startsWith('image/')) onImageUpload(file);
+  };
+  const createDragHandler = (dragging) => (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDraggingOver(dragging);
+  };
+  const handleDrop = (e) => {
+    createDragHandler(false)(e);
+    handleFile(e.dataTransfer.files?.[0]);
+  };
+  const handleFileChange = (e) => {
+    handleFile(e.target.files?.[0]);
+    e.target.value = '';
+  };
+  const uniqueId = `file-upload-${title.replace(/\s+/g, '-')}`;
+
+  return React.createElement('div', null,
+    React.createElement('h3', { className: "text-md font-medium text-gray-300 mb-2" }, title),
+    React.createElement('div', {
+        className: `relative aspect-video w-full border-2 border-dashed rounded-lg flex items-center justify-center transition-all duration-200 ${isDraggingOver ? 'border-indigo-500 bg-gray-700' : 'border-gray-600 bg-gray-800'}`,
+        onDrop: handleDrop, onDragOver: (e) => { e.preventDefault(); e.stopPropagation(); },
+        onDragEnter: createDragHandler(true), onDragLeave: createDragHandler(false)
+      },
+      imagePreview ? React.createElement(React.Fragment, null,
+        React.createElement('img', { src: imagePreview, alt: "Preview", className: "object-cover w-full h-full rounded-md" }),
+        React.createElement('button', { onClick: onImageRemove, className: "absolute top-2 right-2 p-1.5 bg-black/50 rounded-full text-white hover:bg-black/80 transition-colors" }, React.createElement(CloseIcon, { className: "w-5 h-5" }))
+      ) : React.createElement('label', { htmlFor: uniqueId, className: "cursor-pointer text-center p-4" },
+        React.createElement(PlusIcon, { className: "w-8 h-8 mx-auto text-gray-500 mb-2" }),
+        React.createElement('span', { className: "text-sm text-gray-400" }, "Seret & Lepas atau Klik"),
+        React.createElement('input', { id: uniqueId, name: "file-upload", type: "file", className: "sr-only", onChange: handleFileChange, accept: "image/*" })
+      )
+    )
+  );
+};
+
+// --- START OF components/ImageCard.tsx ---
+const ImageCard = ({ image, onZoom, onGeneratePrompt, onGenerateVideo, onRegenerate }) => {
+  const [isHovered, setIsHovered] = useState(false);
+  const [isGeneratingPrompt, setIsGeneratingPrompt] = useState(false);
+  const [promptCopied, setPromptCopied] = useState(false);
+
+  const handleDownload = () => {
+    const link = document.createElement('a');
+    link.href = image.src;
+    link.download = `AVE-Studio-${image.id}.png`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  };
+
+  const handleGeneratePromptClick = async () => {
+    if (image.prompt) return;
+    setIsGeneratingPrompt(true);
+    await onGeneratePrompt(image.id, image.src);
+    setIsGeneratingPrompt(false);
+  };
+
+  const handleCopyPrompt = () => {
+    if (!image.prompt) return;
+    navigator.clipboard.writeText(image.prompt);
+    setPromptCopied(true);
+    setTimeout(() => setPromptCopied(false), 2000);
+  };
+
+  if (image.isLoading) {
+    return React.createElement('div', { className: "aspect-[2/3] bg-gray-800 rounded-lg flex items-center justify-center animate-pulse" },
+      React.createElement(SpinnerIcon, { className: "w-10 h-10 text-gray-600" })
+    );
+  }
+
+  return React.createElement('div', { className: "relative aspect-[2/3] bg-gray-800 rounded-lg overflow-hidden group", onMouseEnter: () => setIsHovered(true), onMouseLeave: () => setIsHovered(false) },
+    image.videoSrc ? React.createElement('video', { key: image.videoSrc, src: image.videoSrc, autoPlay: true, loop: true, muted: true, playsInline: true, className: "w-full h-full object-cover" })
+      : React.createElement('img', { src: image.src, alt: `Generated image ${image.id}`, className: "w-full h-full object-cover" }),
+    image.isGeneratingVideo && React.createElement('div', { className: "absolute inset-0 bg-black/70 flex flex-col items-center justify-center text-white p-4 text-center" },
+      React.createElement(SpinnerIcon, { className: "w-10 h-10" }),
+      React.createElement('p', { className: "mt-3 text-sm font-semibold animate-pulse" }, "AI sedang mengarahkan..."),
+      React.createElement('p', { className: "mt-1 text-xs text-gray-300" }, "Ini bisa memakan waktu beberapa menit.")
+    ),
+    React.createElement('div', { className: `absolute inset-0 bg-black/60 transition-opacity duration-300 ${isHovered && !image.isGeneratingVideo ? 'opacity-100' : 'opacity-0'}` },
+      React.createElement('div', { className: "absolute top-3 right-3 flex items-center space-x-2" },
+        !image.videoSrc && !image.isGeneratingVideo && React.createElement('button', { onClick: () => onRegenerate(image.id), className: "p-2 rounded-full bg-white/10 hover:bg-white/20 text-white transition-colors", title: "Buat Ulang" }, React.createElement(RefreshCwIcon, { className: "w-5 h-5" })),
+        React.createElement('button', { onClick: () => onZoom(image.src), className: "p-2 rounded-full bg-white/10 hover:bg-white/20 text-white transition-colors", title: "Perbesar" }, React.createElement(ZoomIcon, { className: "w-5 h-5" })),
+        React.createElement('button', { onClick: handleDownload, className: "p-2 rounded-full bg-white/10 hover:bg-white/20 text-white transition-colors", title: "Unduh" }, React.createElement(DownloadIcon, { className: "w-5 h-5" })),
+        !image.videoSrc && !image.isGeneratingVideo && React.createElement('button', { onClick: () => onGenerateVideo(image.id, image.src), className: "p-2 rounded-full bg-white/10 hover:bg-white/20 text-white transition-colors", title: "Buat Video" }, React.createElement(VideoIcon, { className: "w-5 h-5" }))
+      ),
+      React.createElement('div', { className: "absolute bottom-0 left-0 right-0 p-4" },
+        !image.prompt && React.createElement('button', { onClick: handleGeneratePromptClick, disabled: isGeneratingPrompt, className: "w-full text-sm flex items-center justify-center space-x-2 bg-white/10 hover:bg-white/20 text-white font-semibold py-2 px-3 rounded-md transition-colors disabled:opacity-50" },
+          isGeneratingPrompt ? React.createElement(SpinnerIcon, { className: "w-5 h-5" }) : React.createElement(SparklesIcon, { className: "w-5 h-5" }),
+          React.createElement('span', null, isGeneratingPrompt ? 'Membuat...' : 'Buat Prompt')
+        ),
+        image.prompt && React.createElement('div', { className: "text-xs text-gray-300 bg-black/30 p-2 rounded-md backdrop-blur-sm" },
+          React.createElement('p', { className: "line-clamp-3" }, image.prompt),
+          React.createElement('button', { onClick: handleCopyPrompt, className: "mt-2 text-indigo-400 hover:text-indigo-300 font-semibold flex items-center space-x-1" },
+            React.createElement(CopyIcon, { className: "w-4 h-4" }),
+            React.createElement('span', null, promptCopied ? 'Tersalin!' : 'Salin Prompt')
+          )
+        )
+      )
+    )
+  );
+};
+
+// --- START OF App.tsx ---
+const App = () => {
+  const [mode, setMode] = useState(Mode.Lookbook);
+  const [modelFile, setModelFile] = useState(null);
+  const [productFile, setProductFile] = useState(null);
+  const [theme, setTheme] = useState(THEMES[0]);
+  const [lighting, setLighting] = useState(LIGHTING[0]);
+  const [error, setError] = useState(null);
+  const [generatedImages, setGeneratedImages] = useState(INITIAL_IMAGES);
+  
+  const [isZoomModalOpen, setIsZoomModalOpen] = useState(false);
+  const [zoomedImage, setZoomedImage] = useState(null);
+  const [isGenerating, setIsGenerating] = useState(false);
+
+  const handleGenerateClick = useCallback(async () => {
+    if ((mode === Mode.Lookbook && (!modelFile || !productFile)) || (mode === Mode.Broll && !productFile)) {
+      setError('Harap unggah semua gambar yang diperlukan.');
+      return;
+    }
+
+    setError(null);
+    setIsGenerating(true);
+    
+    try {
+      const productPart = await fileToGenerativePart(productFile);
+      const requests = [];
+
+      if (mode === Mode.Lookbook) {
+        const modelPart = await fileToGenerativePart(modelFile);
+        const baseParts = [modelPart, productPart];
+        const posePrompts = [
+            'Pose seluruh badan yang menunjukkan bagaimana produk melengkapi pakaian secara keseluruhan.',
+            'Pose close-up yang menyoroti detail dan kualitas produk saat dikenakan.',
+            'Pose aksi atau gaya hidup yang menunjukkan produk sedang digunakan dalam situasi yang alami dan menarik.'
+        ];
+        posePrompts.forEach((posePrompt, index) => {
+            const fullPrompt = `Menggunakan gambar pertama sebagai model dan gambar kedua sebagai produk, buat gambar pemotretan profesional. Model harus mengenakan produk. Pemandangan harus memiliki tema '${theme}' dengan pencahayaan '${lighting}'. ${posePrompt} Hasilnya harus berupa gambar fotorealistik.`;
+            const request = { parts: [...baseParts, { text: fullPrompt }] };
+            requests.push({ id: index + 1, request });
+        });
+      } else {
+          const parts = [productPart];
+          const prompt = `Buat foto produk profesional yang hanya menampilkan item dalam gambar. Latar belakang harus berupa pemandangan yang ditata dengan tema '${theme}' dan pencahayaan '${lighting}'. Jangan sertakan orang atau model apa pun. Fokusnya sepenuhnya pada produk. Hasilnya harus berupa gambar fotorealistik.`;
+          parts.push({ text: prompt });
+          const request = { parts };
+          for (let i = 0; i < 3; i++) {
+              requests.push({ id: i + 1, request });
+          }
+      }
+
+      setGeneratedImages(requests.map(r => ({ ...INITIAL_IMAGES[r.id - 1], isLoading: true, generationRequest: r.request, src: '' })));
+      
+      const imagePromises = requests.map(r => generateImage(r.request));
+
+      imagePromises.forEach((promise, index) => {
+        promise.then(imageUrl => {
+            setGeneratedImages(prev => prev.map(img => img.id === index + 1 ? { ...img, src: imageUrl, isLoading: false } : img));
+          }).catch(err => {
+            console.error(`Gagal membuat gambar pada indeks ${index}:`, err);
+            setGeneratedImages(prev => prev.map(img => img.id === index + 1 ? { ...img, src: `https://picsum.photos/seed/error${index}/400/600`, isLoading: false } : img));
+          });
+      });
+
+      const results = await Promise.allSettled(imagePromises);
+      if (results.every(r => r.status === 'rejected')) {
+          throw new Error("AI gagal menghasilkan gambar apa pun. Silakan coba prompt atau gambar yang berbeda.");
+      }
+    } catch (err) {
+      console.error(err);
+      setError(err instanceof Error ? err.message : 'Terjadi kesalahan yang tidak diketahui saat pembuatan gambar.');
+      setGeneratedImages(INITIAL_IMAGES);
+    } finally {
+      setIsGenerating(false);
+    }
+  }, [mode, modelFile, productFile, theme, lighting]);
+  
+  const handleRegenerateImage = useCallback(async (imageId) => {
+    const imageToRegen = generatedImages.find(img => img.id === imageId);
+    if (!imageToRegen || !imageToRegen.generationRequest) {
+        console.error("Tidak ada permintaan pembuatan yang ditemukan untuk gambar ini.");
+        setError("Tidak dapat membuat ulang gambar: data asli tidak ditemukan.");
+        return;
+    }
+
+    setError(null);
+    setGeneratedImages(prev => prev.map(img =>
+        img.id === imageId ? { ...img, isLoading: true, src: '' } : img
+    ));
+
+    try {
+        const newImageUrl = await generateImage(imageToRegen.generationRequest);
+        setGeneratedImages(prev => prev.map(img =>
+            img.id === imageId ? { ...img, isLoading: false, src: newImageUrl } : img
+        ));
+    } catch (err) {
+        console.error(`Gagal membuat ulang gambar ${imageId}:`, err);
+        setError(`Gagal membuat ulang gambar: ${err.message}`);
+        setGeneratedImages(prev => prev.map(img =>
+            img.id === imageId ? { ...img, isLoading: false, src: imageToRegen.src } : img
+        ));
+    }
+  }, [generatedImages]);
+
+  const handleGeneratePrompt = useCallback(async (imageId, imageSrc) => {
+    try {
+      const prompt = await generateImagePrompt(imageSrc);
+      setGeneratedImages(prev => prev.map(img => (img.id === imageId ? { ...img, prompt } : img)));
+    } catch (err) {
+      console.error(err);
+      setError(err instanceof Error ? err.message : 'Terjadi kesalahan yang tidak diketahui saat membuat prompt.');
+    }
+  }, []);
+
+  const handleGenerateVideo = useCallback(async (imageId, imageSrc) => {
+    setGeneratedImages(prev => prev.map(img => img.id === imageId ? { ...img, isGeneratingVideo: true } : img));
+    setError(null);
+    try {
+      const videoUrl = await generateVideoFromImage(imageSrc);
+      setGeneratedImages(prev => prev.map(img => img.id === imageId ? { ...img, videoSrc: videoUrl, isGeneratingVideo: false } : img));
+    } catch (err) {
+      console.error(err);
+      setError(err instanceof Error ? err.message : 'Terjadi kesalahan yang tidak diketahui saat membuat video.');
+      setGeneratedImages(prev => prev.map(img => img.id === imageId ? { ...img, isGeneratingVideo: false } : img));
+    }
+  }, []);
+
+  const handleZoom = (src) => {
+    setZoomedImage(src);
+    setIsZoomModalOpen(true);
+  };
+  
+  const modelImagePreview = modelFile ? URL.createObjectURL(modelFile) : null;
+  const productImagePreview = productFile ? URL.createObjectURL(productFile) : null;
+  
+  useEffect(() => {
+    return () => {
+        if(modelImagePreview) URL.revokeObjectURL(modelImagePreview);
+        if(productImagePreview) URL.revokeObjectURL(productImagePreview);
+    }
+  }, [modelImagePreview, productImagePreview]);
+  
+  return React.createElement('div', { className: "min-h-screen bg-gray-900 text-gray-200 flex flex-col" },
+    React.createElement('header', { className: "bg-gray-800/50 backdrop-blur-sm border-b border-gray-700 sticky top-0 z-40" },
+      React.createElement('div', { className: "container mx-auto px-6 py-4 flex justify-between items-center" },
+        React.createElement('h1', { className: "text-2xl font-bold tracking-tight text-white" }, "Imajinasikan Produk Afiliator"),
+        React.createElement(BagIcon, { className: "w-8 h-8 text-indigo-400" })
+      )
+    ),
+    React.createElement('main', { className: "container mx-auto px-6 py-8 flex-grow" },
+      React.createElement('div', { className: "flex flex-col lg:flex-row lg:space-x-8" },
+        React.createElement('div', { className: "w-full lg:w-1/3 xl:w-1/4 flex-shrink-0" },
+          React.createElement('div', { className: "space-y-8 sticky top-24" },
+            React.createElement('div', null,
+                React.createElement('h2', {className: 'text-lg font-semibold text-white'}, '1. Pilih Mode'),
+                React.createElement('p', {className: 'text-sm text-gray-400 mb-4'}, 'Pilih jenis pemotretan yang Anda inginkan.'),
+                React.createElement('div', {className: 'grid grid-cols-2 gap-4'},
+                    React.createElement('button', {onClick: () => setMode(Mode.Lookbook), className: `px-4 py-3 rounded-md text-sm font-semibold transition-all duration-200 ${mode === Mode.Lookbook ? 'bg-indigo-600 text-white shadow-lg' : 'bg-gray-700 hover:bg-gray-600'}`}, 'Lookbook'),
+                    React.createElement('button', {onClick: () => setMode(Mode.Broll), className: `px-4 py-3 rounded-md text-sm font-semibold transition-all duration-200 ${mode === Mode.Broll ? 'bg-indigo-600 text-white shadow-lg' : 'bg-gray-700 hover:bg-gray-600'}`}, 'B-roll'),
+                )
+            ),
+            React.createElement('div', null,
+                React.createElement('h2', {className: 'text-lg font-semibold text-white'}, '2. Unggah Gambar'),
+                React.createElement('p', {className: 'text-sm text-gray-400 mb-4'}, 'Sediakan gambar yang diperlukan untuk mode yang Anda pilih.'),
+                React.createElement('div', {className: 'space-y-4'},
+                    mode === Mode.Lookbook && React.createElement(ImageUploader, {title: "Gambar Model", imagePreview: modelImagePreview, onImageUpload: setModelFile, onImageRemove: () => setModelFile(null)}),
+                    React.createElement(ImageUploader, {title: "Gambar Produk", imagePreview: productImagePreview, onImageUpload: setProductFile, onImageRemove: () => setProductFile(null)})
+                )
+            ),
+            React.createElement('div', null,
+                React.createElement('h2', {className: 'text-lg font-semibold text-white'}, '3. Kustomisasi'),
+                React.createElement('p', {className: 'text-sm text-gray-400 mb-4'}, 'Sesuaikan estetika pemotretan Anda.'),
+                React.createElement('div', {className: 'space-y-4'},
+                    React.createElement('div', null,
+                        React.createElement('label', {htmlFor: 'theme', className: 'block text-sm font-medium text-gray-300 mb-1'}, 'Tema Pemotretan'),
+                        React.createElement('select', {id: 'theme', value: theme, onChange: e => setTheme(e.target.value), className: 'w-full bg-gray-700 border-gray-600 rounded-md py-2 px-3 focus:ring-indigo-500 focus:border-indigo-500 transition'},
+                            THEMES.map(t => React.createElement('option', {key: t}, t))
+                        )
+                    ),
+                    React.createElement('div', null,
+                        React.createElement('label', {htmlFor: 'lighting', className: 'block text-sm font-medium text-gray-300 mb-1'}, 'Gaya Pencahayaan'),
+                        React.createElement('select', {id: 'lighting', value: lighting, onChange: e => setLighting(e.target.value), className: 'w-full bg-gray-700 border-gray-600 rounded-md py-2 px-3 focus:ring-indigo-500 focus:border-indigo-500 transition'},
+                            LIGHTING.map(l => React.createElement('option', {key: l}, l))
+                        )
+                    )
+                )
+            ),
+            React.createElement('button', { onClick: handleGenerateClick, disabled: isGenerating, className: "w-full bg-indigo-600 text-white font-bold py-3 px-4 rounded-lg hover:bg-indigo-700 disabled:bg-indigo-800 disabled:opacity-70 disabled:cursor-not-allowed transition-all duration-200 flex items-center justify-center space-x-2" },
+                isGenerating && React.createElement(SpinnerIcon, { className: "w-5 h-5" }),
+                React.createElement('span', null, isGenerating ? 'Menyiapkan penata gaya AI...' : (mode === Mode.Lookbook ? 'Buat Lookbook' : 'Buat B-roll'))
+            ),
+            error && React.createElement('p', { className: "text-red-400 text-sm mt-2" }, error)
+          )
+        ),
+        React.createElement('div', { className: "w-full lg:w-2/3 xl:w-3/4 mt-8 lg:mt-0" },
+          React.createElement('div', { className: "grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-6" },
+            generatedImages.map((image) => React.createElement(ImageCard, {
+              key: image.id, image: image, onZoom: handleZoom,
+              onGeneratePrompt: handleGeneratePrompt, 
+              onGenerateVideo: handleGenerateVideo,
+              onRegenerate: handleRegenerateImage
+            }))
+          )
+        )
+      )
+    ),
+    React.createElement('footer', { className: "bg-gray-800/50 border-t border-gray-700 mt-8" },
+      React.createElement('div', { className: "container mx-auto px-6 py-4 text-center text-gray-500 text-sm" },
+        `© ${new Date().getFullYear()} AVE-Studio. Didukung oleh Google Gemini.`
+      )
+    ),
+    React.createElement(Modal, { isOpen: isZoomModalOpen, onClose: () => setIsZoomModalOpen(false) },
+      zoomedImage && React.createElement('img', { src: zoomedImage, alt: "Tampilan yang diperbesar", className: "max-w-full max-h-[90vh] rounded-lg" })
+    )
+  );
+};
+
+// --- START OF index.tsx ---
+const rootElement = document.getElementById('root');
+const root = ReactDOM.createRoot(rootElement);
+root.render(React.createElement(React.StrictMode, null, React.createElement(App)));
+    </script>
+</body>
+</html>
